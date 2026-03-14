@@ -1,0 +1,220 @@
+/**
+ * encrypt.cpp — AES-256-CBC File Encryption Tool
+ *
+ * Build:
+ *   g++ -std=c++17 -O2 -o encrypt encrypt.cpp -lssl -lcrypto
+ *
+ * Usage:
+ *   ./encrypt enc <input_file> <output_file> <password>
+ *   ./encrypt dec <input_file> <output_file> <password>
+ *
+ * Details:
+ *   - AES-256-CBC encryption
+ *   - PBKDF2-SHA256 key derivation (100,000 iterations)
+ *   - Random 16-byte IV and 16-byte salt per encryption
+ *   - File format: [MAGIC(8)] [SALT(16)] [IV(16)] [CIPHERTEXT...]
+ */
+
+#include <iostream>
+#include <fstream>
+#include <vector>
+#include <string>
+#include <cstring>
+#include <stdexcept>
+
+#include <openssl/evp.h>
+#include <openssl/rand.h>
+#include <openssl/sha.h>
+
+// ─── Constants ───────────────────────────────────────────────────────────────
+
+static const uint8_t MAGIC[8]   = {'E','N','C','R','Y','P','T','1'};
+static const int     KEY_LEN    = 32;   // AES-256
+static const int     IV_LEN     = 16;   // AES block size
+static const int     SALT_LEN   = 16;
+static const int     PBKDF2_ITER = 100000;
+static const size_t  CHUNK_SIZE = 64 * 1024; // 64 KB read buffer
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+static std::vector<uint8_t> read_file(const std::string& path) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) throw std::runtime_error("Cannot open input file: " + path);
+    return {std::istreambuf_iterator<char>(f), {}};
+}
+
+static void write_file(const std::string& path, const std::vector<uint8_t>& data) {
+    std::ofstream f(path, std::ios::binary);
+    if (!f) throw std::runtime_error("Cannot open output file: " + path);
+    f.write(reinterpret_cast<const char*>(data.data()), data.size());
+    if (!f) throw std::runtime_error("Write failed: " + path);
+}
+
+static void derive_key(const std::string& password,
+                       const uint8_t* salt,
+                       uint8_t* key_out)
+{
+    if (!PKCS5_PBKDF2_HMAC(password.c_str(),
+                            static_cast<int>(password.size()),
+                            salt, SALT_LEN,
+                            PBKDF2_ITER,
+                            EVP_sha256(),
+                            KEY_LEN, key_out))
+    {
+        throw std::runtime_error("PBKDF2 key derivation failed");
+    }
+}
+
+// ─── Encrypt ─────────────────────────────────────────────────────────────────
+
+std::vector<uint8_t> encrypt_data(const std::vector<uint8_t>& plain,
+                                   const std::string& password)
+{
+    uint8_t salt[SALT_LEN], iv[IV_LEN], key[KEY_LEN];
+
+    // Generate random salt and IV
+    if (RAND_bytes(salt, SALT_LEN) != 1 ||
+        RAND_bytes(iv,   IV_LEN)   != 1)
+        throw std::runtime_error("Failed to generate random bytes");
+
+    derive_key(password, salt, key);
+
+    // Allocate output buffer: plain + up to one extra AES block
+    std::vector<uint8_t> cipher(plain.size() + IV_LEN);
+    int out_len1 = 0, out_len2 = 0;
+
+    EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+    if (!ctx) throw std::runtime_error("EVP_CIPHER_CTX_new failed");
+
+    try {
+        if (!EVP_EncryptInit_ex(ctx, EVP_aes_256_cbc(), nullptr, key, iv))
+            throw std::runtime_error("EVP_EncryptInit_ex failed");
+
+        if (!EVP_EncryptUpdate(ctx, cipher.data(), &out_len1,
+                               plain.data(), static_cast<int>(plain.size())))
+            throw std::runtime_error("EVP_EncryptUpdate failed");
+
+        if (!EVP_EncryptFinal_ex(ctx, cipher.data() + out_len1, &out_len2))
+            throw std::runtime_error("EVP_EncryptFinal_ex failed");
+    } catch (...) {
+        EVP_CIPHER_CTX_free(ctx);
+        throw;
+    }
+    EVP_CIPHER_CTX_free(ctx);
+
+    cipher.resize(out_len1 + out_len2);
+
+    // Build output: MAGIC | SALT | IV | CIPHERTEXT
+    std::vector<uint8_t> out;
+    out.reserve(sizeof(MAGIC) + SALT_LEN + IV_LEN + cipher.size());
+    out.insert(out.end(), MAGIC,     MAGIC     + sizeof(MAGIC));
+    out.insert(out.end(), salt,      salt      + SALT_LEN);
+    out.insert(out.end(), iv,        iv        + IV_LEN);
+    out.insert(out.end(), cipher.begin(), cipher.end());
+
+    // Zero sensitive material
+    OPENSSL_cleanse(key,  sizeof(key));
+    OPENSSL_cleanse(iv,   sizeof(iv));
+    OPENSSL_cleanse(salt, sizeof(salt));
+
+    return out;
+}
+
+// ─── Decrypt ─────────────────────────────────────────────────────────────────
+
+std::vector<uint8_t> decrypt_data(const std::vector<uint8_t>& blob,
+                                   const std::string& password)
+{
+    const size_t HEADER = sizeof(MAGIC) + SALT_LEN + IV_LEN;
+    if (blob.size() < HEADER)
+        throw std::runtime_error("File too small — not a valid encrypted file");
+
+    // Verify magic header
+    if (memcmp(blob.data(), MAGIC, sizeof(MAGIC)) != 0)
+        throw std::runtime_error("Invalid magic — wrong file format or not encrypted");
+
+    const uint8_t* salt   = blob.data() + sizeof(MAGIC);
+    const uint8_t* iv     = salt + SALT_LEN;
+    const uint8_t* cipher = iv   + IV_LEN;
+    const size_t   cipher_len = blob.size() - HEADER;
+
+    uint8_t key[KEY_LEN];
+    derive_key(password, salt, key);
+
+    std::vector<uint8_t> plain(cipher_len);
+    int out_len1 = 0, out_len2 = 0;
+
+    EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+    if (!ctx) throw std::runtime_error("EVP_CIPHER_CTX_new failed");
+
+    try {
+        if (!EVP_DecryptInit_ex(ctx, EVP_aes_256_cbc(), nullptr, key, iv))
+            throw std::runtime_error("EVP_DecryptInit_ex failed");
+
+        if (!EVP_DecryptUpdate(ctx, plain.data(), &out_len1,
+                               cipher, static_cast<int>(cipher_len)))
+            throw std::runtime_error("EVP_DecryptUpdate failed");
+
+        if (!EVP_DecryptFinal_ex(ctx, plain.data() + out_len1, &out_len2))
+            throw std::runtime_error("Decryption failed — wrong password or corrupted file");
+    } catch (...) {
+        EVP_CIPHER_CTX_free(ctx);
+        OPENSSL_cleanse(key, sizeof(key));
+        throw;
+    }
+    EVP_CIPHER_CTX_free(ctx);
+    OPENSSL_cleanse(key, sizeof(key));
+
+    plain.resize(out_len1 + out_len2);
+    return plain;
+}
+
+// ─── Main ─────────────────────────────────────────────────────────────────────
+
+int main(int argc, char* argv[]) {
+    if (argc != 5) {
+        std::cerr << "Usage:\n"
+                  << "  " << argv[0] << " enc <input> <output> <password>\n"
+                  << "  " << argv[0] << " dec <input> <output> <password>\n";
+        return 1;
+    }
+
+    std::string mode     = argv[1];
+    std::string in_path  = argv[2];
+    std::string out_path = argv[3];
+    std::string password = argv[4];
+
+    if (password.empty()) {
+        std::cerr << "Error: password cannot be empty\n";
+        return 1;
+    }
+
+    try {
+        auto input = read_file(in_path);
+
+        if (mode == "enc") {
+            auto output = encrypt_data(input, password);
+            write_file(out_path, output);
+            std::cout << "Encrypted: " << in_path
+                      << " -> " << out_path
+                      << " (" << output.size() << " bytes)\n";
+
+        } else if (mode == "dec") {
+            auto output = decrypt_data(input, password);
+            write_file(out_path, output);
+            std::cout << "Decrypted: " << in_path
+                      << " -> " << out_path
+                      << " (" << output.size() << " bytes)\n";
+
+        } else {
+            std::cerr << "Unknown mode '" << mode << "'. Use 'enc' or 'dec'.\n";
+            return 1;
+        }
+
+    } catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << "\n";
+        return 1;
+    }
+
+    return 0;
+}
