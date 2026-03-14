@@ -1,0 +1,10 @@
+//encryption
+
+example of @encrypt files= "encrypted.dp"
+
+keys=1,2,3 if use $867<delete character>
+@encrypt {
+ 1= $generate ;
+ 2= $generate ;
+ 3= $generate ;
+}
